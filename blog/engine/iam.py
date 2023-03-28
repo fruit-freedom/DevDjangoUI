@@ -21,7 +21,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework import serializers
 from rest_framework.authentication import BaseAuthentication
 from rest_framework import HTTP_HEADER_ENCODING
-from rest_framework_simplejwt.exceptions import AuthenticationFailed
+# from rest_framework_simplejwt.exceptions import AuthenticationFailed
 
 from requests.exceptions import HTTPError
 import requests
@@ -590,6 +590,7 @@ class SocialLoginViewJWT(SocialLoginView):
 
         response.set_cookie('TOKEN', validated_data.get('access_token'))
         return response
+
 
 
 class ClientRegisterView(View):

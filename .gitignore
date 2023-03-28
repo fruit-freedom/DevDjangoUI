@@ -1,2 +1,4 @@
 .env
-__pycache__/
+*.py[cod]
+*__pycache__*
+blog/engine/__pycache__
