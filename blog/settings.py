@@ -68,6 +68,7 @@ MIDDLEWARE = [
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'blog.engine.authentication.CookieAuthenticationWithExternalJWT',
+        'blog.engine.authentication.ClientAuthentication',
         'dj_rest_auth.jwt_auth.JWTCookieAuthentication',
     )
 }

@@ -17,7 +17,15 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework import routers
 from blog.engine import views
-from blog.engine.iam import keycloak_login, keycloak_callback, KeycloakLogin, keycloak_login_jwt, SocialLoginViewJWT
+from blog.engine.iam import (
+    keycloak_login,
+    keycloak_callback,
+    keycloak_callback_redirect_home,
+    KeycloakLogin,
+    keycloak_login_jwt,
+    SocialLoginViewJWT,
+    ClientRegisterView
+    )
 
 
 from django.contrib import admin
@@ -36,9 +44,10 @@ urlpatterns = [
     # path('dj-rest-auth/keycloak/', KeycloakLogin.as_view(), name='kc_login'),
     path('auth/login', keycloak_login, name="keycloak_login"),
     path('auth/login_jwt', keycloak_login_jwt, name="keycloak_login_jwt"),
-    path('auth/callback', keycloak_callback, name="keycloak_callback"),
+    path('auth/callback', keycloak_callback_redirect_home, name="keycloak_callback"),
     path('auth/token', KeycloakLogin.as_view(), name="keycloak_token"),
     path('auth/token_jwt', SocialLoginViewJWT.as_view(), name="keycloak_token_jwt"),
+    path('auth/register-client', ClientRegisterView.as_view(), name="register_client"),
     path('home/', views.home, name='home'),
     path('cvat/', views.cvat, name='cvat'),
     path('admin/', admin.site.urls, name='admin'),

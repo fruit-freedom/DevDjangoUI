@@ -27,10 +27,27 @@ from requests.exceptions import HTTPError
 import requests
 import json
 
-# class KeycloakLogin(SocialLoginView):
-#     adapter_class = KeycloakOAuth2Adapter
-#     client_class = OAuth2Client
-#     callback_url = getattr(settings, 'KEYCLOAK_CALLBACK_URL', None)
+from allauth.socialaccount.providers.base.constants import (
+    AuthAction,
+    AuthError,
+)
+from allauth.socialaccount.helpers import (
+    complete_social_login,
+    render_authentication_error,
+)
+from requests import RequestException
+
+from django.core.exceptions import PermissionDenied
+from allauth.socialaccount.providers.oauth2.client import (
+    OAuth2Client,
+    OAuth2Error,
+)
+from allauth.socialaccount.providers.base import ProviderException
+
+from django.views import View
+
+from .models import ClientAccount
+
 
 class KeycloakAdapter(KeycloakOAuth2Adapter):
     def get_callback_url(self, request, app):
@@ -69,12 +86,66 @@ class OAuth2CallbackViewEx(OAuth2CallbackView):
             f'&scope={state.get("scope")}')
 
 
+class OAuth2CallbackViewRedirectHome(OAuth2CallbackView):
+    def dispatch(self, request, *args, **kwargs):
+        if "error" in request.GET or "code" not in request.GET:
+            # Distinguish cancel from error
+            auth_error = request.GET.get("error", None)
+            if auth_error == self.adapter.login_cancelled_error:
+                error = AuthError.CANCELLED
+            else:
+                error = AuthError.UNKNOWN
+            return render_authentication_error(
+                request, self.adapter.provider_id, error=error
+            )
+        app = self.adapter.get_provider().get_app(self.request)
+        client = self.get_client(self.request, app)
+
+        try:
+            access_token = self.adapter.get_access_token_data(request, app, client)
+            token = self.adapter.parse_token(access_token)
+            token.app = app
+            login = self.adapter.complete_login(
+                request, app, token, response=access_token
+            )
+            login.token = token
+            if self.adapter.supports_state:
+                login.state = SocialLogin.verify_and_unstash_state(
+                    request, get_request_param(request, "state")
+                )
+            else:
+                login.state = SocialLogin.unstash_state(request)
+
+            ret = complete_social_login(request, login)
+
+            if isinstance(ret, HttpResponseBadRequest):
+                raise serializers.ValidationError(ret.content)
+            
+            response = HttpResponseRedirect('/cvat/')
+            response.set_cookie('TOKEN', access_token['access_token'])
+
+            return response
+
+        except (
+            PermissionDenied,
+            OAuth2Error,
+            RequestException,
+            ProviderException,
+            serializers.ValidationError
+        ) as e:
+            return render_authentication_error(
+                request, self.adapter.provider_id, exception=e
+            )
+
+
+
 # ----    -----    -----    -----    -----    -----    -----    -----    -----    -----
 # /auth/login/
 # ----    -----    -----    -----    -----    -----    -----    -----    -----    -----
 
 keycloak_login = OAuth2LoginView.adapter_view(KeycloakAdapter)
 keycloak_callback = OAuth2CallbackViewEx.adapter_view(KeycloakAdapter)
+keycloak_callback_redirect_home = OAuth2CallbackViewRedirectHome.adapter_view(KeycloakAdapter)
 
 # ----    -----    -----    -----    -----    -----    -----    -----    -----    -----
 # /auth/login/token/
@@ -235,39 +306,13 @@ class SocialLoginViewEx(SocialLoginView):
             return HttpResponseBadRequest('Unverified email')
 
         self.login()
-        # return self.get_response()
-
-        # Use self.access_token & self.refresh_token
-        # print("---- validated data: ", self.serializer.validated_data)
-        ret = self.get_response()
-        # ret.accepted_renderer = JSONRenderer()
-        # ret.accepted_media_type = "application/json"
-        # ret.renderer_context = {}
-        # ret.render()
-        # print(f"---- SocialLoginViewEx.post() content:  {ret.content}")
-        return ret
-    
-    # Custom login function to use externat JWT from keycloak
-    # def login(self):
-    #     self.user = self.serializer.validated_data['user']
-    #     token_model = get_token_model()
-
-    #     # Exchange authorization_code to JWT
-    #     self.access_token, self.refresh_token = jwt_encode(self.user)
-
-    #     if api_settings.SESSION_LOGIN:
-    #         self.process_login()
+        return self.get_response()
 
 # /keycloak/login/token
 class KeycloakLogin(SocialLoginViewEx):
     adapter_class = KeycloakAdapter
     client_class = OAuth2Client
     # callback_url = getattr(settings, 'KEYCLOAK_CALLBACK_URL', None)
-
-
-# ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----
-# Updated to JWT only
-# ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----
 
 # ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----    ----
 # /auth/login_jwt
@@ -493,7 +538,7 @@ class SocialLoginSerializerJWT(SocialLoginSerializer):
 
             login.lookup()
             login.save(request, connect=True)
-            # Chacnged user fields groups, user_permissions
+            # Changed user fields groups, user_permissions
             self.post_signup(login, attrs)
 
         attrs['user'] = login.account.user
@@ -545,3 +590,83 @@ class SocialLoginViewJWT(SocialLoginView):
 
         response.set_cookie('TOKEN', validated_data.get('access_token'))
         return response
+
+
+class ClientRegisterView(View):
+    adapter_class = KeycloakAdapter
+
+    def get_auth_header(self, request):
+        header = request.META.get('HTTP_AUTHORIZATION')
+
+        if header is None:
+            return
+        
+        parts = header.split()
+        if len(parts) != 2:
+            return
+        
+        if parts[0] != 'Bearer':
+            return
+        
+        return parts[1]
+
+    def introspect_client_token(self, client_token, adapter, request):
+        app = adapter.get_provider().get_app(request)
+        server_url = adapter.get_provider()._server_url
+
+        data = {
+            "client_id": app.client_id,
+            "client_secret": app.secret,
+            "token": client_token
+        }
+
+        response = requests.request(
+            'POST',
+            f'{server_url}/protocol/openid-connect/token/introspect',
+            data=data
+        )
+
+        response.raise_for_status()
+        introspection = response.json()
+        if not introspection['active']:
+            raise Exception()
+
+        return introspection
+
+    def get(self, request):
+        client_token = self.get_auth_header(request)
+
+        if client_token is None:
+            response = JsonResponse({'status': 'No Auhtorization header'})
+            response.status_code = 401
+            return response
+
+        adapter = self.adapter_class(request)
+
+        try:
+            info = self.introspect_client_token(client_token, adapter, request)
+        except:
+            response = JsonResponse({'status': 'Token not valid'})
+            response.status_code = 401
+            return response
+
+        username = info['preferred_username']
+        client_id = info['client_id']
+
+        if ClientAccount.objects.filter(client_id=client_id).exists():
+            return JsonResponse({'status': 'Client account already exist'})
+
+        client_account = ClientAccount()
+        client_account.client_id = client_id
+        client_account.provider = adapter.get_provider().get_app().provider
+
+        user = client_account.user = get_user_model()()
+        user.set_unusable_password()
+        user.is_staff = True
+        user.is_superuser = True
+        user.username = username
+
+        user.save()
+        client_account.save()
+
+        return JsonResponse({'status': 'Ok'})

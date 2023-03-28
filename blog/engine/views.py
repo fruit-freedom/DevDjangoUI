@@ -5,6 +5,7 @@ from blog.engine.serializers import UserSerializer, GroupSerializer
 
 from django.http import JsonResponse, HttpResponse
 
+
 class UserViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows users to be viewed or edited.
@@ -42,3 +43,4 @@ def home(request):
         'path': request.path,
         'QueryDict': str(request.GET)
     })
+

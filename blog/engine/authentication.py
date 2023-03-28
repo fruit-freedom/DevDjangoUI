@@ -12,6 +12,8 @@ from django.conf import settings
 
 import traceback
 
+from .models import ClientAccount
+
 class KeycloakAdapter(KeycloakOAuth2Adapter):
     def get_callback_url(self, request, app):
         return settings.KEYCLOAK_CALLBACK_URL
@@ -115,3 +117,90 @@ class CookieAuthenticationWithExternalJWT(BaseAuthentication):
             print("adapter.complete_login(): ", traceback.format_exc())
             print('*' * 75)
             return None
+
+
+class ClientAuthentication(BaseAuthentication):
+    adapter_class = KeycloakAdapter
+
+    def get_header(self, request):
+        """
+        Extracts the header containing the JSON web token from the given
+        request.
+        """
+        header = request.META.get('HTTP_AUTHORIZATION')
+
+        return header
+
+    def get_raw_token(self, header):
+        """
+        Extracts an unvalidated JSON web token from the given "Authorization"
+        header value.
+        """
+        parts = header.split()
+
+        if len(parts) == 0:
+            # Empty AUTHORIZATION header sent
+            return None
+
+        if parts[0] != 'Bearer':
+            # Assume the header does not contain a JSON web token
+            return None
+
+        if len(parts) != 2:
+            return None
+
+        return parts[1]
+
+    def try_to_retrieve_jwt(self, request):
+        header = self.get_header(request)
+
+        if header is None:
+            return None
+
+        raw_token = self.get_raw_token(header)
+
+        if raw_token is None:
+            return None
+        
+        return raw_token
+    
+    def introspect_client_token(self, client_token, adapter, request):
+        app = adapter.get_provider().get_app(request)
+        server_url = adapter.get_provider()._server_url
+
+        data = {
+            "client_id": app.client_id,
+            "client_secret": app.secret,
+            "token": client_token
+        }
+
+        response = requests.request(
+            'POST',
+            f'{server_url}/protocol/openid-connect/token/introspect',
+            data=data
+        )
+
+        response.raise_for_status()
+        introspection = response.json()
+        if not introspection['active']:
+            raise Exception()
+
+        return introspection
+
+    def authenticate(self, request):
+        client_token = self.try_to_retrieve_jwt(request)
+
+        if client_token is None:
+            return
+        
+        adapter = self.adapter_class(request)
+        try:
+            info = self.introspect_client_token(client_token, adapter, request)
+            client_id = info['client_id']
+
+            client_account = ClientAccount.objects.get(client_id=client_id)
+
+            return client_account.user, client_token
+        except:
+            return
+
