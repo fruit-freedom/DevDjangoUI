@@ -3,3 +3,4 @@ djangorestframework==3.12.4
 dj-rest-auth==2.2.4
 django-social-auth==0.7.28
 django-allauth
+djangorestframework-simplejwt
